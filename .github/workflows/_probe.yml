@@ -1,0 +1,29 @@
+name: 运行器探针
+# 临时文件：诊断 macOS runner 是否还能分配。用完即删。
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 打个招呼
+        run: |
+          echo "ubuntu runner 正常"
+          uname -a
+
+  macos-probe-14:
+    runs-on: macos-14
+    steps:
+      - name: 打个招呼
+        run: |
+          echo "macos-14 runner 正常"
+          uname -a
+
+  macos-probe-15:
+    runs-on: macos-15
+    steps:
+      - name: 打个招呼
+        run: |
+          echo "macos-15 runner 正常"
+          uname -a
