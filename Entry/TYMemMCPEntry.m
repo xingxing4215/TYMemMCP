@@ -32,7 +32,10 @@
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
 #import <pthread.h>
+#import <stdio.h>
 #import <stdlib.h>
+#import <string.h>
+#import <time.h>
 #import <unistd.h>
 
 #import "TYHTTPServer.h"
@@ -70,6 +73,8 @@ static void *TYBootThread(void *arg) {
 
         // 模块监听（热更 dylib 加载后模块表变化）
         [[TYModule shared] startWatching];
+        TYMLog(@"模块监听已启动，模块数=%lu",
+               (unsigned long)[[TYModule shared] allModules].count);
 
         // 等 Unity（给足 5 分钟，冷启动 + 热更可能很久）
         TYWaitForUnity(300);
@@ -80,9 +85,11 @@ static void *TYBootThread(void *arg) {
         if (env && *env) {
             int p = atoi(env);
             if (p >= 0 && p <= 65535) port = (uint16_t)p;
+            TYMLog(@"环境变量 TYMEM_MCP_PORT=%s → 端口 %u", env, port);
         }
 
         TYHTTPServer *srv = [TYHTTPServer shared];
+        TYMLog(@"正在绑定端口 %u …", port);
         if (![srv startOnPort:port]) {
             // 默认端口被占就随机分配一个
             TYMLog(@"端口 %u 起不来，改用随机端口", port);
@@ -97,8 +104,56 @@ static void *TYBootThread(void *arg) {
     return NULL;
 }
 
+//
+//  ═══════════════════════════════════════════════════════════════════════
+//  启动探针（不依赖日志系统，也不依赖网络）
+//  ═══════════════════════════════════════════════════════════════════════
+//
+//  调试注入问题时，第一个要回答的问题是「dylib 到底被加载了吗」。
+//  日志系统（TYLog）本身可能有依赖问题，所以这里用最原始的方式：
+//  构造函数一进来就直接 fopen/fwrite 一个标记文件。
+//
+//  只用 libSystem 的 POSIX 调用，不碰 Foundation、不碰 Objective-C
+//  运行时、不分配堆内存 —— 只要 dyld 调用了构造函数，这个文件必然出现。
+//
+//  落盘位置（按顺序尝试第一个可写的）：
+//    $HOME/Documents/tymcp.boot
+//    $HOME/Library/Caches/tymcp.boot
+//    /tmp/tymcp.boot
+//
+static void TYWriteBootMarker(void) {
+    const char *cands[] = {
+        "Documents/tymcp.boot",
+        "Library/Caches/tymcp.boot",
+        "/tmp/tymcp.boot",
+    };
+    char path[1024];
+    const char *home = getenv("HOME");
+
+    for (size_t i = 0; i < sizeof(cands) / sizeof(cands[0]); i++) {
+        if (cands[i][0] == '/') {
+            strlcpy(path, cands[i], sizeof(path));
+        } else {
+            if (!home) continue;
+            snprintf(path, sizeof(path), "%s/%s", home, cands[i]);
+        }
+        FILE *f = fopen(path, "a");
+        if (!f) continue;
+        fprintf(f, "pid=%d ts=%ld bundle=%s\n",
+                getpid(), (long)time(NULL),
+                getenv("CFBundleIdentifier") ? getenv("CFBundleIdentifier") : "?");
+        fclose(f);
+        // 让 home 下也留一份，便于用文件管理器看到
+        return;
+    }
+}
+
 __attribute__((constructor))
 static void TYMemMCPInit(void) {
+    // ★ 第一件事：写标记。放在最前面，确保「加载成功」这件事有据可查。
+    //   任何后续步骤崩了都不影响这个证据。
+    TYWriteBootMarker();
+
     // 构造函数里只起线程，不做重活
     pthread_t th;
     pthread_attr_t at;
