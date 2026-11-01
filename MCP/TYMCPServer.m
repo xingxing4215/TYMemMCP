@@ -407,7 +407,8 @@ static TYScanType gLastType = TYScanF32;
                 NSMutableString *asc = [NSMutableString string];
                 for (NSUInteger i = 0; i < r.data.length; i++) {
                     uint8_t c = p[i];
-                    [asc appendFormat:@"%C", (c >= 32 && c < 127) ? (unichar)c : (unichar)'.'];
+                    unichar ch = (c >= 32 && c < 127) ? (unichar)c : (unichar)'.';
+                    [asc appendFormat:@"%C", ch];
                 }
                 d[@"ascii"] = asc;
                 // 若长度够，附多类型解读

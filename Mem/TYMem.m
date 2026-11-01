@@ -4,10 +4,39 @@
 //
 
 #import "TYMem.h"
-#import <mach/mach_vm.h>
+#import <mach/mach.h>
+#import <mach/vm_map.h>
+#import <mach/vm_region.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
 #import <string.h>
+
+//
+// ═══════════════════════════════════════════════════════════════════════
+// 为什么用 vm_* 而不是 mach_vm_*
+// ═══════════════════════════════════════════════════════════════════════
+//
+// iOS SDK 里的 <mach/mach_vm.h> 是一个**故意留空的桩头**：
+//
+//     #error mach_vm.h unsupported.
+//
+// 包含它就编译失败（CI 实测：Mem/TYMem.m:7 → mach_vm.h unsupported）。
+// mach_vm_* 属于内核接口，Apple 不在公共 SDK 里暴露。
+//
+// 对应支撑能力由 <mach/vm_map.h> 里的 vm_* 家族提供：
+//
+//     mach_vm_region      → vm_region_64
+//     mach_vm_read        → vm_read
+//     mach_vm_deallocate  → vm_deallocate
+//     mach_vm_write       → vm_write
+//
+// 本插件在**自身进程内**操作，vm_* 完全够用，且是受支持的公共 API。
+// 若换成外部进程调试（task_for_pid），才需要 mach_vm_* 的 64 位语义，
+// 那种场景不属于本插件的定位。
+//
+// 返回值类型也从 mach_vm_* 换成 vm_*：地址用 vm_address_t，
+// 大小用 vm_size_t，调用点相应调整。
+//
 
 #pragma mark - TYMemRegion
 
@@ -138,13 +167,13 @@
 }
 
 - (TYMemRegion *)regionAt:(uint64_t)addr {
-    mach_vm_address_t a = addr;
-    mach_vm_size_t sz = 0;
+    vm_address_t a = (vm_address_t)addr;
+    vm_size_t sz = 0;
     vm_region_basic_info_data_64_t info;
     mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
     mach_port_t obj = MACH_PORT_NULL;
-    kern_return_t kr = mach_vm_region(self.task, &a, &sz, VM_REGION_BASIC_INFO_64,
-                                      (vm_region_info_t)&info, &cnt, &obj);
+    kern_return_t kr = vm_region_64(self.task, &a, &sz, VM_REGION_BASIC_INFO_64,
+                                    (vm_region_info_t)&info, &cnt, &obj);
     if (obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), obj);
     if (kr != KERN_SUCCESS) return nil;
 
@@ -232,12 +261,12 @@
         uint64_t done = 0;
         while (done < chunk) {
             uint64_t want = chunk - done;
-            // mach_vm_read 单次不要太大，分块更稳
+            // vm_read 单次不要太大，分块更稳
             uint64_t step = MIN(want, 1ull << 20);
             vm_offset_t buf = 0;
             mach_msg_type_number_t got = 0;
-            kern_return_t kr = mach_vm_read(self.task, cur + done, (mach_vm_size_t)step,
-                                            &buf, &got);
+            kern_return_t kr = vm_read(self.task, (vm_address_t)(cur + done),
+                                       (vm_size_t)step, &buf, &got);
             if (kr != KERN_SUCCESS || got == 0) {
                 if (res.kr == 0) res.kr = kr;
                 anyGap = YES;
@@ -248,7 +277,7 @@
                 break;
             }
             [acc appendBytes:(const void *)buf length:got];
-            mach_vm_deallocate(mach_task_self(), buf, got);
+            vm_deallocate(mach_task_self(), buf, got);
             done += got;
         }
         cur += chunk;
@@ -289,11 +318,11 @@
         return NO;
     }
 
-    kern_return_t kr = mach_vm_write(self.task, (mach_vm_address_t)addr,
-                                     (vm_offset_t)data.bytes,
-                                     (mach_msg_type_number_t)data.length);
+    kern_return_t kr = vm_write(self.task, (vm_address_t)addr,
+                                (vm_offset_t)data.bytes,
+                                (mach_msg_type_number_t)data.length);
     if (kr != KERN_SUCCESS) {
-        if (err) *err = [NSString stringWithFormat:@"mach_vm_write 失败 kr=%d", kr];
+        if (err) *err = [NSString stringWithFormat:@"vm_write 失败 kr=%d", kr];
         return NO;
     }
     return YES;

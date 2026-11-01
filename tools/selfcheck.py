@@ -278,6 +278,48 @@ def check_shell_var_cjk():
                     f"改用 `${{{m.group(1)}}}`")
 
 
+def check_ios_sdk_forbidden():
+    """抓 iOS SDK 里不可用的头与符号。
+
+    #1 <mach/mach_vm.h> —— SDK 里的桩头，首行就是
+           #error mach_vm.h unsupported.
+       包含它必编译失败（本项目 CI 真实踩过）。应改用
+       <mach/vm_map.h> 的 vm_* 家族。
+
+    #2 mach_vm_* 函数 —— 同上，不在公共 SDK 暴露。
+    """
+    for f in SOURCE_FILES():
+        text = io.open(f, encoding="utf-8").read()
+        # 只看实际代码，注释里说明「为什么不用」是允许的
+        code = []
+        for line in text.splitlines():
+            st = line.lstrip()
+            if st.startswith("//") or st.startswith("*") or st.startswith("/*"):
+                continue
+            code.append(line)
+        code = "\n".join(code)
+
+        if re.search(r'#\s*(?:import|include)\s*<mach/mach_vm\.h>', code):
+            FAILS.append(f"{rel(f)} 包含 <mach/mach_vm.h> —— "
+                         f"iOS SDK 里是桩头会 #error，改用 <mach/vm_map.h>")
+        for fn in ("mach_vm_read", "mach_vm_write", "mach_vm_region",
+                   "mach_vm_deallocate", "mach_vm_read_overwrite"):
+            if re.search(r'\b' + fn + r'\s*\(', code):
+                FAILS.append(f"{rel(f)} 调用了 {fn}() —— iOS SDK 不导出，"
+                             f"改用对应的 vm_* 家族")
+
+
+def SOURCE_FILES():
+    out = []
+    for dp, _, names in os.walk(ROOT):
+        if "__pycache__" in dp or "/build" in dp.replace("\\", "/"):
+            continue
+        for nm in sorted(names):
+            if nm.endswith((".m", ".h", ".c")):
+                out.append(os.path.join(dp, nm))
+    return out
+
+
 def check_vendor():
     """Vendor/ 必须自包含 —— CI 只 checkout 本仓库，缺文件就是编译失败。"""
     vend = os.path.join(ROOT, "Vendor")
@@ -326,6 +368,7 @@ def main():
     check_structure()
     check_vendor()
     check_shell_var_cjk()
+    check_ios_sdk_forbidden()
 
     if WARNS:
         print("警告:")

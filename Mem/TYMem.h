@@ -5,10 +5,14 @@
 //  职责：在【自己的进程内】安全地读写任意已映射地址。
 //
 //  ═══════════════════════════════════════════════════════════════════════
-//  为什么不用 mach_vm_read_overwrite 裸读
+//  为什么不用 mach_vm_* 裸读
 //  ═══════════════════════════════════════════════════════════════════════
 //
-//  直接对任意地址调 mach_vm_read_overwrite 有两个问题：
+//  iOS SDK 的 <mach/mach_vm.h> 是刻意留空的桩头（`#error mach_vm.h unsupported.`），
+//  mach_vm_* 属于内核接口，不在公共 SDK 里。本层改用 <mach/vm_map.h>
+//  的 vm_* 家族 —— 在自身进程内操作，它完全够用且是受支持 API。
+//
+//  直接裸读（无论 vm_read 还是 mach_vm_read）有两个问题：
 //
 //  1) 未映射地址会返回 KERN_INVALID_ADDRESS，但**跨段边界**的读会
 //     部分成功、部分失败，返回值只有一个，无法知道读到了多少。
@@ -16,7 +20,7 @@
 //     实际读到空洞」的情况，若调用方拿它当有效数据会写出脏值。
 //
 //  本层的做法：
-//    · 读之前先用 mach_vm_region 把整个区间按 VM region 切开，
+//    · 读之前先用 vm_region_64 把整个区间按 VM region 切开，
 //      只在 VM_PROT_READ 的 region 内读；
 //    · 每条 region 内再按页边界夹取，绝不跨 region 连续读；
 //    · 读成功与否、实际读到多少字节，都显式回报给上层。
@@ -49,6 +53,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL executable;
 /// "rwx" 形式
 @property (nonatomic, readonly, copy) NSString *protectionString;
+
+/// 序列化（供 MCP 响应）
+- (NSDictionary *)dictionaryRepresentation;
 @end
 
 /// 一次读取的结果
@@ -63,6 +70,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 部分成功：前面某些 region 不可读导致空洞
 @property (nonatomic, assign) BOOL partial;
 @property (nonatomic, copy, nullable) NSArray<NSNumber *> *gaps;  ///< 不可读区间的起址
+
+/// 序列化（供 MCP 响应）
+- (NSDictionary *)dictionaryRepresentation;
 @end
 
 @interface TYMem : NSObject
