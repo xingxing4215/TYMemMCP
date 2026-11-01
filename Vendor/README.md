@@ -59,3 +59,52 @@ bash tools/sync_vendor.sh
   需要调整行为请在 `Il2Cpp/TYIl2CppBridge.*` 里包装。
 - 本工程**不**包含 TaoYao 的业务代码（功能执行器、清单、云控等），
   只借它的 il2cpp 底层绑定。
+
+---
+
+## 本工程的本地修正（重要）
+
+`TYIl2Cpp.m` 里有一处**本工程做的修正**，上游没有。标记文字：
+`本地修正（TYMemMCP）`。
+
+### 修正内容：UnityFramework 探测
+
+原实现：
+
+```c
+const char *cands[] = {
+    "UnityFramework",
+    "@rpath/UnityFramework.framework/UnityFramework",
+    NULL,
+};
+for (...) dlopen(cands[i], RTLD_NOW | RTLD_NOLOAD);
+```
+
+问题：`RTLD_NOLOAD` 要求**精确匹配**已加载镜像的 install name。
+UnityFramework 实际的 install name 是完整路径：
+
+```
+@executable_path/Frameworks/UnityFramework.framework/UnityFramework
+```
+
+两个候选都匹配不上，`TYOpenUnity()` 永远返回 NULL → il2cpp 永远不可用。
+
+**实测证据**：插件启动日志里 `before-wait-unity` 与
+`after-wait-unity` 的时间戳正好相差 300 秒（超时上限），
+说明等待逻辑一次都没命中。
+
+修正：
+
+1. 首选 `dlsym(RTLD_DEFAULT, "il2cpp_domain_get")` —— 全局符号查找，
+   不关心镜像叫什么、装在哪
+2. 兜底遍历 `_dyld_image_count()`，按真实路径 `dlopen(..., RTLD_NOLOAD)`
+3. 保留原候选作为最后尝试
+
+### 对同步的影响
+
+`tools/sync_vendor.sh` 检测到该标记时会**跳过** `TYIl2Cpp.m`，
+避免把 bug 覆盖回来。要强制覆盖加 `--force`。
+`selfcheck.py` 也会校验标记是否还在 —— 丢了就直接报错。
+
+若上游已合并等效修正，可以 `--force` 同步，然后删掉本节的说明。
+

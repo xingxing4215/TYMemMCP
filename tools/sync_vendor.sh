@@ -35,11 +35,40 @@ echo
 
 mkdir -p Vendor
 
+# ── 保护本地修正 ───────────────────────────────────────────────────────
+# Vendor/TYIl2Cpp.m 里有一处**本工程自己的修正**（UnityFramework 探测，
+# 见下方 PATCH_MARK）。上游没有这个修正，直接覆盖会把 bug 带回来，
+# 让 il2cpp 又永远不可用。所以：若检测到补丁存在，默认拒绝覆盖，
+# 除非显式传 --force。
+PATCH_MARK="本地修正（TYMemMCP）"
+FORCE=0
+[ "${1:-}" = "--force" ] && FORCE=1
+
+if [ -f Vendor/TYIl2Cpp.m ] && grep -q "$PATCH_MARK" Vendor/TYIl2Cpp.m; then
+  if [ "$FORCE" -ne 1 ]; then
+    echo "⚠ Vendor/TYIl2Cpp.m 含本地修正（UnityFramework 探测），默认不覆盖。"
+    echo "  上游若已包含等效修正，再执行: bash tools/sync_vendor.sh --force"
+    echo "  否则请把该修正移植到上游，保持两边一致。"
+    echo
+    # 仍然检查其余文件
+    SKIP_TYIL2CPP=1
+  else
+    echo "⚠ --force：将覆盖本地修正（Vendor/TYIl2Cpp.m）"
+    SKIP_TYIL2CPP=0
+  fi
+else
+  SKIP_TYIL2CPP=0
+fi
+
 changed=0
 for f in "${FILES[@]}"; do
   if [ ! -f "$SRC/Core/$f" ]; then
     echo "  ✗ 源文件缺失: Core/$f"
     exit 1
+  fi
+  if [ "$f" = "TYIl2Cpp.m" ] && [ "${SKIP_TYIL2CPP:-0}" -eq 1 ]; then
+    echo "  ⊘ ${f}（含本地修正，已跳过）"
+    continue
   fi
   if [ -f "Vendor/$f" ] && cmp -s "$SRC/Core/$f" "Vendor/$f"; then
     echo "  = ${f}（无变化）"

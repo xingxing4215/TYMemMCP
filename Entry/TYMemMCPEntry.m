@@ -31,6 +31,7 @@
 
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
+#import <mach-o/dyld.h>
 #import <pthread.h>
 #import <stdio.h>
 #import <stdlib.h>
@@ -48,25 +49,95 @@
 // 前置声明：TYBootTrace 定义在下方，但 TYWaitForUnity 里就要用
 static void TYBootTrace(const char *stage);
 
+//
+//  ═══════════════════════════════════════════════════════════════════════
+//  为什么不能 dlopen("UnityFramework", RTLD_NOLOAD)
+//  ═══════════════════════════════════════════════════════════════════════
+//
+//  RTLD_NOLOAD 要求**精确匹配**已加载镜像的 install name。
+//  UnityFramework 的 install name 是完整路径形式：
+//
+//      @executable_path/Frameworks/UnityFramework.framework/UnityFramework
+//
+//  用裸名 "UnityFramework" 去查永远匹配不上，于是死等 300 秒超时。
+//  实测证据：tymcp.boot 里 before-wait-unity 与 after-wait-unity
+//  的时间戳正好相差 300 秒，说明等待逻辑一次都没命中。
+//
+//  正确做法有两层：
+//    1) 首选 dlsym(RTLD_DEFAULT, "il2cpp_domain_get")
+//       —— 全局符号表查找，不关心镜像叫什么、装在哪。
+//       只要 UnityFramework 已被加载且导出该符号，就能拿到。
+//    2) 兜底遍历 _dyld_image_count()，找路径里含 UnityFramework 的镜像，
+//       再用它的完整路径 dlopen(..., RTLD_NOLOAD)。
+//
+//  两层都拿不到才认为未就绪。
+//
+
+/// 在已加载镜像里找 UnityFramework 的完整路径
+static const char *TYFindUnityImagePath(void) {
+    uint32_t n = _dyld_image_count();
+    for (uint32_t i = 0; i < n; i++) {
+        const char *nm = _dyld_get_image_name(i);
+        if (nm && strstr(nm, "UnityFramework")) return nm;
+    }
+    return NULL;
+}
+
+/// 探测 il2cpp 是否可用：返回拿到符号的镜像句柄，失败返回 NULL
+static void *TYProbeIl2Cpp(void) {
+    // 1) 全局符号查找（最可靠，不依赖镜像名）
+    void *sym = dlsym(RTLD_DEFAULT, "il2cpp_domain_get");
+    if (sym) {
+        // 拿到符号即视为就绪。为后续调用方便，尝试返回镜像句柄。
+        const char *p = TYFindUnityImagePath();
+        if (p) {
+            void *h = dlopen(p, RTLD_NOW | RTLD_NOLOAD);
+            if (h) return h;
+        }
+        return RTLD_DEFAULT;   // 符号可用，但没定位到具体镜像
+    }
+
+    // 2) 兜底：按完整路径 dlopen
+    const char *p = TYFindUnityImagePath();
+    if (p) {
+        void *h = dlopen(p, RTLD_NOW | RTLD_NOLOAD);
+        if (h && dlsym(h, "il2cpp_domain_get")) return h;
+    }
+    return NULL;
+}
+
 /// 等 Unity 起来：至少 UnityFramework 已加载，且 il2cpp API 可用。
 /// 返回是否在超时内就绪（不就绪也继续起服务，工具会回报 il2cpp 未就绪）。
 static BOOL TYWaitForUnity(int timeoutSec) {
     time_t t0 = time(NULL);
-    BOOL logged = NO;
+    BOOL loggedImg = NO;
+
     while (time(NULL) - t0 < timeoutSec) {
-        void *h = dlopen("UnityFramework", RTLD_NOW | RTLD_NOLOAD);
+        void *h = TYProbeIl2Cpp();
         if (h) {
-            void *sym = dlsym(h, "il2cpp_domain_get");
-            if (sym) {
-                if (!logged) TYMLog(@"Unity + il2cpp 已就绪（等了 %lds）",
-                                   (long)(time(NULL) - t0));
-                return YES;
-            }
-            if (!logged) { TYMLog(@"UnityFramework 已加载，等 il2cpp 符号…"); logged = YES; }
+            TYMLog(@"Unity + il2cpp 已就绪（等了 %lds）", (long)(time(NULL) - t0));
+            return YES;
         }
+
+        // 进度日志：区分「镜像还没加载」和「镜像有了但符号没有」
+        if (!loggedImg) {
+            const char *p = TYFindUnityImagePath();
+            if (p) {
+                TYMLog(@"已找到 UnityFramework 镜像：%s，等 il2cpp 符号…", p);
+                loggedImg = YES;
+            }
+        }
+
         usleep(500000);
     }
-    TYMLog(@"等 Unity 超时（%ds），仍启动服务", timeoutSec);
+
+    const char *p = TYFindUnityImagePath();
+    if (!p) {
+        TYMLog(@"等 Unity 超时（%ds）：始终没找到 UnityFramework 镜像", timeoutSec);
+    } else {
+        TYMLog(@"等 Unity 超时（%ds）：镜像在（%s）但没拿到 il2cpp_domain_get",
+               timeoutSec, p);
+    }
     return NO;
 }
 
@@ -82,10 +153,20 @@ static void *TYBootThread(void *arg) {
         TYMLog(@"模块监听已启动，模块数=%lu",
                (unsigned long)[[TYModule shared] allModules].count);
 
-        // 等 Unity（给足 5 分钟，冷启动 + 热更可能很久）
-        TYBootTrace("before-wait-unity");
-        TYWaitForUnity(300);
-        TYBootTrace("after-wait-unity");
+        // ───────────────────────────────────────────────────────────────
+        //  顺序很重要：先绑端口，再等 il2cpp
+        // ───────────────────────────────────────────────────────────────
+        //
+        //  实测教训：原实现先 TYWaitForUnity(300) 再绑端口，
+        //  而 il2cpp 检测因 dlopen 裸名匹配失败而超时，结果整整 300 秒
+        //  内端口都不通 —— 期间 MCP 完全不可用，从外部看就是「插件没工作」。
+        //
+        //  但内存读写、模块查询、扫描这些工具**根本不需要 il2cpp**，
+        //  只有 9 个 il2cpp_* 工具需要。没理由让全部功能陪着等。
+        //
+        //  现在先绑端口（毫秒级），服务立刻可用；再在后台等 il2cpp，
+        //  就绪后 il2cpp_* 工具自然可用，未就绪时它们会明确回报状态。
+        //
 
         // 端口：环境变量覆盖
         uint16_t port = TY_DEFAULT_PORT;
@@ -116,6 +197,19 @@ static void *TYBootThread(void *arg) {
         TYBootTrace(stage);
         TYMLog(@"就绪：http://<设备IP>:%u/mcp", srv.actualPort);
         TYMLog(@"健康检查：http://<设备IP>:%u/health", srv.actualPort);
+
+        // ───────────────────────────────────────────────────────────────
+        //  服务已可用，再等 il2cpp（这一步可以慢慢来，不影响外部访问）
+        // ───────────────────────────────────────────────────────────────
+        TYBootTrace("before-wait-unity");
+        BOOL il2cppReady = TYWaitForUnity(300);
+        TYBootTrace(il2cppReady ? "unity-ready" : "unity-timeout");
+        if (il2cppReady) {
+            TYMLog(@"il2cpp 就绪：9 个 il2cpp_* 工具可用");
+        } else {
+            TYMLog(@"il2cpp 未就绪：il2cpp_* 工具会回报未就绪，"
+                   @"内存/扫描类工具不受影响");
+        }
     }
     return NULL;
 }

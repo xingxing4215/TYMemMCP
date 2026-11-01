@@ -365,6 +365,45 @@ def check_static_fn_forward_decl():
                     break
 
 
+def check_unity_dlopen_patch():
+    """两件事：
+
+    1) dlopen("裸名", RTLD_NOLOAD) 是错的。
+       RTLD_NOLOAD 要求精确匹配已加载镜像的 install name，
+       而 UnityFramework 的 install name 是完整路径
+       （@executable_path/Frameworks/UnityFramework.framework/UnityFramework），
+       裸名永远匹配不上 → il2cpp 永远不可用。
+       实测证据：启动日志里等 il2cpp 正好卡满 300 秒超时。
+
+    2) Vendor/TYIl2Cpp.m 含本工程的本地修正，不能被 sync 覆盖掉。
+    """
+    for f in SOURCE_FILES():
+        text = io.open(f, encoding="utf-8").read()
+        for i, line in enumerate(text.splitlines(), 1):
+            if line.strip().startswith(("//", "*", "/*")):
+                continue
+            # 找 dlopen("xxx", ... RTLD_NOLOAD)
+            m = re.search(r'dlopen\s*\(\s*"([^"]+)"', line)
+            if m and "RTLD_NOLOAD" in line:
+                arg = m.group(1)
+                # 完整路径（含 / 或 @）才可能精确匹配
+                if "/" not in arg and not arg.startswith("@"):
+                    FAILS.append(
+                        f"{rel(f)}:{i} dlopen(\"{arg}\", RTLD_NOLOAD) —— "
+                        f"RTLD_NOLOAD 需精确匹配 install name（完整路径），"
+                        f"裸名永不命中；改用 dlsym(RTLD_DEFAULT, ..) "
+                        f"或遍历 _dyld_image_count()")
+
+    # 本地修正必须还在
+    v = os.path.join(ROOT, "Vendor", "TYIl2Cpp.m")
+    if os.path.exists(v):
+        t = io.open(v, encoding="utf-8").read()
+        if "本地修正（TYMemMCP）" not in t:
+            FAILS.append(
+                "Vendor/TYIl2Cpp.m 缺少本地修正标记 —— "
+                "可能被 sync_vendor.sh 覆盖，il2cpp 探测会退回裸名匹配而失效")
+
+
 def check_vendor():
     """Vendor/ 必须自包含 —— CI 只 checkout 本仓库，缺文件就是编译失败。"""
     vend = os.path.join(ROOT, "Vendor")
@@ -415,6 +454,7 @@ def main():
     check_shell_var_cjk()
     check_ios_sdk_forbidden()
     check_static_fn_forward_decl()
+    check_unity_dlopen_patch()
 
     if WARNS:
         print("警告:")

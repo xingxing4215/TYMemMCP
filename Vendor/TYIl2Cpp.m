@@ -14,6 +14,7 @@
 #import "TYIl2Cpp.h"
 #import "TYLog.h"
 #import <dlfcn.h>
+#import <mach-o/dyld.h>
 #import <math.h>
 #import <string.h>
 
@@ -115,7 +116,32 @@ static fn_method_get_param                p_method_get_param;
 #pragma mark - UnityFramework 探测
 
 static void *TYOpenUnity(void) {
-    // 只查是否已加载（RTLD_NOLOAD），绝不主动 dlopen 改变 Unity 加载顺序
+    // 只查是否已加载（RTLD_NOLOAD），绝不主动 dlopen 改变 Unity 加载顺序。
+    //
+    // ★ 本地修正（TYMemMCP）：原实现只试 "UnityFramework" 与
+    //   "@rpath/UnityFramework.framework/UnityFramework" 两个候选，
+    //   但 RTLD_NOLOAD 要求**精确匹配**已加载镜像的 install name。
+    //   实测 UnityFramework 的 install name 是
+    //       @executable_path/Frameworks/UnityFramework.framework/UnityFramework
+    //   两个候选都匹配不上 → 永远返回 NULL → il2cpp 不可用。
+    //   证据：插件启动日志里等 il2cpp 正好卡满 300 秒超时。
+    //
+    //   修正办法：先用 dlsym(RTLD_DEFAULT, ...) 做全局符号查找
+    //   （不关心镜像名叫什么），再兜底遍历 dyld 镜像按真实路径打开。
+
+    // 1) 全局符号查找：最可靠
+    if (dlsym(RTLD_DEFAULT, "il2cpp_domain_get")) return RTLD_DEFAULT;
+
+    // 2) 遍历已加载镜像，按真实路径打开
+    uint32_t n = _dyld_image_count();
+    for (uint32_t i = 0; i < n; i++) {
+        const char *nm = _dyld_get_image_name(i);
+        if (!nm || !strstr(nm, "UnityFramework")) continue;
+        void *h = dlopen(nm, RTLD_NOW | RTLD_NOLOAD);
+        if (h) return h;
+    }
+
+    // 3) 原候选（保留，某些环境下列表形式可能命中）
     const char *cands[] = {
         "UnityFramework",
         "@rpath/UnityFramework.framework/UnityFramework",
