@@ -321,6 +321,50 @@ def SOURCE_FILES():
     return out
 
 
+def check_static_fn_forward_decl():
+    """static 函数在被定义之前使用，必须有前置声明。
+
+    C99 起不再允许隐式函数声明 —— 直接用会报
+        error: call to undeclared function 'X'
+    而等编译器看到定义时又报
+        error: static declaration of 'X' follows non-static declaration
+
+    本工程真实踩过（TYBootTrace 定义在文件尾部，却在文件中部的
+    TYWaitForUnity 里被调用）。自检不执行编译器，这里做静态顺序检查。
+    """
+    for f in SOURCE_FILES():
+        text = io.open(f, encoding="utf-8").read()
+        lines = text.splitlines()
+        # 收集：static 函数的“定义”（形如 static 返回类型 名字(...) { ）
+        defs = {}
+        for i, line in enumerate(lines):
+            m = re.match(r'\s*static\s+[\w\s\*]*?(\w+)\s*\([^;]*\)\s*\{', line)
+            if m:
+                defs.setdefault(m.group(1), i)
+        # 收集：前置声明（形如 static 返回类型 名字(...); ）
+        decls = set()
+        for line in lines:
+            m = re.match(r'\s*static\s+[\w\s\*]*?(\w+)\s*\([^;]*\)\s*;', line)
+            if m:
+                decls.add(m.group(1))
+        # 检查每个 static 函数：在定义行之前是否被调用
+        for name, dline in defs.items():
+            if name in decls:
+                continue
+            for i, line in enumerate(lines):
+                if i >= dline:
+                    break
+                # 跳过定义自身那一行之前的注释
+                if line.strip().startswith(("//", "*", "/*")):
+                    continue
+                if re.search(r'\b' + re.escape(name) + r'\s*\(', line):
+                    FAILS.append(
+                        f"{rel(f)} static 函数 {name}() 在第 {i+1} 行被调用，"
+                        f"但定义在第 {dline+1} 行且无前置声明"
+                        f"（C99 不允许隐式声明，编译会失败）")
+                    break
+
+
 def check_vendor():
     """Vendor/ 必须自包含 —— CI 只 checkout 本仓库，缺文件就是编译失败。"""
     vend = os.path.join(ROOT, "Vendor")
@@ -370,6 +414,7 @@ def main():
     check_vendor()
     check_shell_var_cjk()
     check_ios_sdk_forbidden()
+    check_static_fn_forward_decl()
 
     if WARNS:
         print("警告:")

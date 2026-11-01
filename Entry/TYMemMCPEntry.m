@@ -45,6 +45,9 @@
 
 #define TY_DEFAULT_PORT 27019
 
+// 前置声明：TYBootTrace 定义在下方，但 TYWaitForUnity 里就要用
+static void TYBootTrace(const char *stage);
+
 /// 等 Unity 起来：至少 UnityFramework 已加载，且 il2cpp API 可用。
 /// 返回是否在超时内就绪（不就绪也继续起服务，工具会回报 il2cpp 未就绪）。
 static BOOL TYWaitForUnity(int timeoutSec) {
