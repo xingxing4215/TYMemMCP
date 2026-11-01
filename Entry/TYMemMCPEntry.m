@@ -69,15 +69,20 @@ static BOOL TYWaitForUnity(int timeoutSec) {
 
 static void *TYBootThread(void *arg) {
     @autoreleasepool {
+        TYBootTrace("thread-entered");
         TYMLog(@"启动中 pid=%d", getpid());
 
         // 模块监听（热更 dylib 加载后模块表变化）
+        TYBootTrace("before-module-watch");
         [[TYModule shared] startWatching];
+        TYBootTrace("after-module-watch");
         TYMLog(@"模块监听已启动，模块数=%lu",
                (unsigned long)[[TYModule shared] allModules].count);
 
         // 等 Unity（给足 5 分钟，冷启动 + 热更可能很久）
+        TYBootTrace("before-wait-unity");
         TYWaitForUnity(300);
+        TYBootTrace("after-wait-unity");
 
         // 端口：环境变量覆盖
         uint16_t port = TY_DEFAULT_PORT;
@@ -90,14 +95,22 @@ static void *TYBootThread(void *arg) {
 
         TYHTTPServer *srv = [TYHTTPServer shared];
         TYMLog(@"正在绑定端口 %u …", port);
+        char stage[64];
+        snprintf(stage, sizeof(stage), "before-bind-port-%u", port);
+        TYBootTrace(stage);
+
         if (![srv startOnPort:port]) {
             // 默认端口被占就随机分配一个
+            TYBootTrace("bind-failed-try-random");
             TYMLog(@"端口 %u 起不来，改用随机端口", port);
             if (![srv startOnPort:0]) {
+                TYBootTrace("bind-random-FAILED");
                 TYMLog(@"!! HTTP 服务器启动失败，功能不可用");
                 return NULL;
             }
         }
+        snprintf(stage, sizeof(stage), "bound-port-%u", srv.actualPort);
+        TYBootTrace(stage);
         TYMLog(@"就绪：http://<设备IP>:%u/mcp", srv.actualPort);
         TYMLog(@"健康检查：http://<设备IP>:%u/health", srv.actualPort);
     }
@@ -121,6 +134,52 @@ static void *TYBootThread(void *arg) {
 //    $HOME/Library/Caches/tymcp.boot
 //    /tmp/tymcp.boot
 //
+//  ───────────────────────────────────────────────────────────────────────
+//  为什么探针和日志要分开写
+//  ───────────────────────────────────────────────────────────────────────
+//
+//  实测：装了探针后 tymcp.boot 正常出现，说明构造函数**确实执行了**。
+//  但 taoyao.log 里没有任何 [memmcp] 行 —— 说明问题不在加载，
+//  而在「日志没写出去」或「后续步骤卡住/崩了」。
+//
+//  日志走的是 TYLog，它依赖 Foundation 的
+//  NSSearchPathForDirectoriesInDomains 与 NSMutableArray。
+//  这些在构造函数早期的可靠性不如裸 POSIX 调用（探针就是纯 POSIX，
+//  所以它能成功）。为排除「日志系统本身没起来」这个干扰，
+//  这里再加一条纯 POSIX 的阶段日志，与探针写同一个文件。
+//
+//  这样 tymcp.boot 就同时承担两个职责：
+//    · 存在性          → dylib 被加载了
+//    · 内容里的阶段标记 → 启动流程走到哪一步
+//
+
+/// 往 tymcp.boot 追加一行阶段标记（纯 POSIX，不依赖 Foundation）
+static void TYBootTrace(const char *stage) {
+    const char *cands[] = {
+        "Documents/tymcp.boot",
+        "Library/Caches/tymcp.boot",
+        "/tmp/tymcp.boot",
+    };
+    char path[1024];
+    const char *home = getenv("HOME");
+
+    for (size_t i = 0; i < sizeof(cands) / sizeof(cands[0]); i++) {
+        if (cands[i][0] == '/') {
+            strlcpy(path, cands[i], sizeof(path));
+        } else {
+            if (!home) continue;
+            snprintf(path, sizeof(path), "%s/%s", home, cands[i]);
+        }
+        FILE *f = fopen(path, "a");
+        if (!f) continue;
+        fprintf(f, "[stage] pid=%d ts=%ld %s\n", getpid(), (long)time(NULL), stage);
+        // 立即刷盘：后面若崩了，这一步的证据必须already在磁盘上
+        fflush(f);
+        fclose(f);
+        return;
+    }
+}
+
 static void TYWriteBootMarker(void) {
     const char *cands[] = {
         "Documents/tymcp.boot",
