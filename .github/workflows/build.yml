@@ -68,7 +68,19 @@ permissions:
 jobs:
   build:
     name: 编译 arm64 dylib
-    runs-on: macos-14
+    # ★ 必须是 macos-15，不要退回 macos-14
+    #
+    # GitHub 已下线 macos-14 标签。用它的表现为：任务在 0~2 秒内
+    # 直接 cancelled，且【没有任何日志】—— 看起来像代码问题，
+    # 实际是 runner 根本没能分配。
+    #
+    # 实测对照（同仓库同时期，2026-11-01）：
+    #     ubuntu-latest   success
+    #     macos-14        cancelled（0 秒，无日志）
+    #     macos-15        success
+    #
+    # 遇到「CI 秒取消、无日志」先怀疑 runner 标签，不要查代码。
+    runs-on: macos-15
     timeout-minutes: 30
 
     steps:
