@@ -20,12 +20,11 @@
 #    · mock_mcp_test.py      —— 起 mock 服务器跑完整 MCP 握手时序
 #
 # 第 2 层 · 产物结构（编译后立即校验，build.sh 内部也会查一遍）
-#    1) install_name = @executable_path/TYMemMCP.dylib（硬性门槛）
-#       宿主 czrxd 唯一 LC_RPATH 是 @executable_path/Frameworks，
-#       而本 app 约定 dylib 放 .app 根目录（既有注入产物
-#       @executable_path/星星💫超自然.dylib 即如此）。
-#       写成 @rpath/... 会被解析到 Frameworks/ 下，文件不在那里
-#       → dyld 在 main() 之前报 Library not loaded → 点开即闪退。
+#    1) install_name = @rpath/TYMemMCP.dylib（硬性门槛）
+#       轻松签「导入插件」重写主二进制的 LC_LOAD_DYLIB 时用 @rpath/ 形式，
+#       靠 app 自身的 LC_RPATH 解析。实测对照：本机留存的历史产物中
+#       @rpath/TaoYao.dylib 与 @rpath/Russ公益.dylib 都是轻松签装过且可用的。
+#       与它们保持一致。
 #    2) __mod_init_func 段存在
 #       本插件入口是 __attribute__((constructor))，靠该段被 dyld 调用。
 #       缺段 = 注入后压根不初始化。
@@ -205,7 +204,7 @@ jobs:
 
             NAME=$(otool -D "$DYLIB" | tail -n 1)
             echo "install_name = $NAME"
-            if [ "$NAME" != "@executable_path/TYMemMCP.dylib" ]; then
+            if [ "$NAME" != "@rpath/TYMemMCP.dylib" ]; then
               echo "✗ 签名后 install_name 被破坏：$NAME"
               exit 1
             fi

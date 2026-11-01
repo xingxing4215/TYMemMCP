@@ -230,8 +230,9 @@ def check_structure():
 
     # build.sh 的两道硬校验
     sh = io.open(os.path.join(ROOT, "build.sh"), encoding="utf-8").read()
-    if "@executable_path/TYMemMCP.dylib" not in sh:
-        FAILS.append("build.sh 未使用 @executable_path 形式的 install_name（会导致注入后闪退）")
+    if "@rpath/TYMemMCP.dylib" not in sh:
+        FAILS.append("build.sh 未使用 @rpath 形式的 install_name"
+                     "（轻松签导入用 @rpath，对照可用的 @rpath/TaoYao.dylib）")
     if "mod_init_func" not in sh:
         FAILS.append("build.sh 未校验 __mod_init_func 段")
 

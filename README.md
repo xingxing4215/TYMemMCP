@@ -124,10 +124,11 @@ make dist     # 编译 + 打包成 zip
 
 任一不过就中断：
 
-1. **`install_name` = `@executable_path/TYMemMCP.dylib`**
-   宿主 `czrxd` 只有一个 rpath `@executable_path/Frameworks`，
-   而本 app 的注入约定是把 dylib 放 `.app` 根目录。写 `@rpath/...`
-   会让 dyld 在 `main()` 之前终止进程 —— 表现就是点开即闪退。
+1. **`install_name` = `@rpath/TYMemMCP.dylib`**
+   轻松签「导入插件」重写主二进制的 `LC_LOAD_DYLIB` 时用 `@rpath/`
+   形式，靠 app 自身的 `LC_RPATH` 解析。本机留存的历史产物中，
+   `@rpath/TaoYao.dylib` 与 `@rpath/Russ公益.dylib` 都是轻松签装过
+   且确认可用的 —— 与它们保持一致。
 
 2. **`__mod_init_func` 段存在**
    本插件入口是 `__attribute__((constructor))`，靠该段被 dyld 调用。
@@ -161,8 +162,8 @@ TAOYAO_SRC=/path/to/TaoYaoFix ./build.sh release
 
 把 `TYMemMCP.dylib` 放进 `Payload/czrxd.app/`，然后：
 
-- 主二进制加 `LC_LOAD_WEAK_DYLIB -> @executable_path/TYMemMCP.dylib`，或
-- 用你现有的注入方式（与 `TaoYao-39.dylib` 同样的做法）
+- 用轻松签的「导入插件」选中该 dylib（它会自动重写主二进制的加载指令），或
+- 手工给主二进制加 `LC_LOAD_DYLIB -> @rpath/TYMemMCP.dylib`
 
 启动后日志在 `Documents/taoyao.log`（与 TaoYao 共用），搜 `[memmcp]`。
 

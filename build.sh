@@ -6,12 +6,18 @@
 # 与 TaoYao 的 build.sh 共用同一套关键结论（踩过的坑不再踩）
 # ═══════════════════════════════════════════════════════════════════════
 #
-# ★ install_name 必须与宿主注入约定一致
-#   宿主 czrxd 的 LC_RPATH 只有 @executable_path/Frameworks，
-#   而本 app 的注入约定是把 dylib 放 .app 根目录
-#   （既有产物 星星💫超自然.dylib / TaoYao-39.dylib 都在根目录）。
-#   写成 @rpath/... 会解析到 Frameworks/ 下 → dyld 在 main() 之前终止
-#   → 点开即闪退。本脚本用 @executable_path/TYMemMCP.dylib 并硬校验。
+# ★ install_name 用 @rpath/
+#
+#   实测对照（本机留存的全部历史产物）：
+#
+#     @rpath/Russ公益.dylib            轻松签装过，可用
+#     @rpath/TaoYao.dylib              轻松签装过，可用   ← 以此为准
+#     @executable_path/TaoYao.dylib    另一种形式
+#
+#   轻松签「导入插件」重写主二进制的 LC_LOAD_DYLIB 时用 @rpath/ 形式，
+#   靠 app 自身的 LC_RPATH 解析。改用 @rpath/ 与已可用产物保持一致。
+#
+#   （先前用 @executable_path/ 是基于旧结论，已按实测证据更正。）
 #
 # ★ 必须有 __mod_init_func 段
 #   本工程入口是 __attribute__((constructor))，靠该段被 dyld 调用。
@@ -130,7 +136,7 @@ LDFLAGS=(
   -miphoneos-version-min=12.0
   -dynamiclib
   # ★ 与宿主注入约定对齐（见文件头）
-  -install_name "@executable_path/TYMemMCP.dylib"
+  -install_name "@rpath/TYMemMCP.dylib"
   -dead_strip
   -Wl,-no_implicit_dylibs
   -framework Foundation
@@ -151,14 +157,14 @@ echo "== 产物校验 =="
 file "$OUT_DYLIB"
 lipo -info "$OUT_DYLIB" || true
 
-echo "--- install_name（闪退根因）---"
+echo "--- install_name ---"
 INSTALL_NAME="$(otool -D "$OUT_DYLIB" 2>/dev/null | tail -n 1)"
 echo "   install_name = $INSTALL_NAME"
 case "$INSTALL_NAME" in
-  "@executable_path/TYMemMCP.dylib")
-    echo "   ✓ 与 app 注入约定一致" ;;
+  "@rpath/TYMemMCP.dylib")
+    echo "   ✓ 与轻松签导入约定一致（对照可用的 @rpath/TaoYao.dylib）" ;;
   *)
-    echo "   ✗ install_name 不符！期望 @executable_path/TYMemMCP.dylib"
+    echo "   ✗ install_name 不符！期望 @rpath/TYMemMCP.dylib"
     exit 1 ;;
 esac
 
@@ -180,5 +186,5 @@ echo
 echo "== 全部校验通过 =="
 echo
 echo "落地位置建议：Payload/czrxd.app/TYMemMCP.dylib"
-echo "注入：主二进制加 LC_LOAD_WEAK_DYLIB -> @executable_path/TYMemMCP.dylib"
+echo "注入：主二进制加 LC_LOAD_DYLIB -> @rpath/TYMemMCP.dylib"
 echo "或直接用你现有的注入方式加载该 dylib。"
