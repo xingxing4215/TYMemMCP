@@ -1,0 +1,25 @@
+# 强制 LF —— 覆盖本地 core.autocrlf 的影响
+#
+# 为什么必须显式声明：CI 第 0 层会卡 CRLF（Windows 检出时 git 可能
+# 把 LF 转成 CRLF，导致 build.sh 在 macOS 上执行报错）。
+# 这里把脚本类文件钉死为 LF，让检出结果与仓库内容一致。
+#
+# 二进制文件明确标记，避免任何换行转换。
+
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.m     text eol=lf
+*.h     text eol=lf
+*.c     text eol=lf
+Makefile text eol=lf
+*.md    text eol=lf
+
+# 二进制
+*.dylib binary
+*.zip   binary
+*.png   binary
+*.jpg   binary

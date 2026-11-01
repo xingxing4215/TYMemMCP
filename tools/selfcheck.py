@@ -92,18 +92,46 @@ def check_balance(path):
 
 
 def check_imports(path):
+    """#import "本地头" 必须能被 build.sh 的 -I 列表解析到。
+
+    这里的 -I 列表必须与 build.sh 保持一致 —— 不同步的话
+    本地检查会通过但 CI 编译失败，是最没价值的失败方式。
+    """
+    INCLUDE_DIRS = ("Core", "Mem", "Scan", "Il2Cpp", "MCP", "Net",
+                    "Entry", "Vendor")
     d = os.path.dirname(path)
     text = io.open(path, encoding="utf-8").read()
     for m in re.finditer(r'#import\s+"([^"]+)"', text):
         h = m.group(1)
-        # 在源文件同目录、以及各子目录里找
         cands = [os.path.join(d, h)]
-        for sub in ("Core", "Mem", "Scan", "Il2Cpp", "MCP", "Net", "Entry"):
+        for sub in INCLUDE_DIRS:
             cands.append(os.path.join(ROOT, sub, h))
-        # 复用的 TaoYao 头
-        cands.append(os.path.join(ROOT, "..", "TaoYaoFix", "Core", h))
         if not any(os.path.exists(c) for c in cands):
-            FAILS.append(f"{rel(path)} 找不到头文件 {h}")
+            FAILS.append(f"{rel(path)} 找不到头文件 {h}"
+                         f"（不在同目录，也不在任何 -I 目录）")
+
+
+def check_include_dirs_match_build():
+    """selfcheck 的 INCLUDE_DIRS 与 build.sh 的 -I 列表必须一致。"""
+    sh = os.path.join(ROOT, "build.sh")
+    if not os.path.exists(sh):
+        return
+    text = io.open(sh, encoding="utf-8").read()
+    shdirs = set(re.findall(r'-I"\$ROOT/([A-Za-z0-9_]+)"', text))
+    # build.sh 也可能用 -I"$REUSE_DIR"，其值对应 Vendor
+    if re.search(r'-I"\$REUSE_DIR"', text):
+        shdirs.add("Vendor")
+    py = io.open(os.path.abspath(__file__), encoding="utf-8").read()
+    m = re.search(r'INCLUDE_DIRS = \((.*?)\)', py, re.S)
+    if not m:
+        return
+    pydirs = set(re.findall(r'"([A-Za-z0-9_]+)"', m.group(1)))
+    only_sh = shdirs - pydirs
+    only_py = pydirs - shdirs
+    if only_sh:
+        WARNS.append(f"build.sh 的 -I 多出: {sorted(only_sh)}")
+    if only_py:
+        WARNS.append(f"selfcheck 的 INCLUDE_DIRS 多出: {sorted(only_py)}")
 
 
 FULLWIDTH = "，。；：（）【】“”‘’！？、《》　"
@@ -208,6 +236,32 @@ def check_structure():
         FAILS.append("build.sh 未校验 __mod_init_func 段")
 
 
+def check_vendor():
+    """Vendor/ 必须自包含 —— CI 只 checkout 本仓库，缺文件就是编译失败。"""
+    vend = os.path.join(ROOT, "Vendor")
+    need = ("TYIl2Cpp.h", "TYIl2Cpp.m", "TYLog.h", "TYLog.m", "README.md")
+    for f in need:
+        if not os.path.exists(os.path.join(vend, f)):
+            FAILS.append(f"Vendor/{f} 缺失 —— 仓库不自包含，CI 会编译失败")
+
+    # Bridge 依赖的方法必须仍在 Vendor 头里声明
+    hdr = os.path.join(vend, "TYIl2Cpp.h")
+    if os.path.exists(hdr):
+        text = io.open(hdr, encoding="utf-8").read()
+        methods = (
+            "classFullyQualified classWithNamespace allImageNames classNameOf "
+            "classOfObject methodOfClass invokeNoArg invokeIntReturning "
+            "staticObjectField objectField fieldOfClass isStaticField "
+            "fieldTypeName readBoolField writeBoolField readInt32Field "
+            "writeInt32Field readFloatField writeFloatField "
+            "imageClassEnumerationAvailable classNamesInImageNamed "
+            "scanFieldsInImageNamed classInImageNamed fieldsOfClass methodsOfClass"
+        ).split()
+        miss = [m for m in methods if m not in text]
+        if miss:
+            FAILS.append(f"Vendor/TYIl2Cpp.h 缺 Bridge 依赖的方法: {miss}")
+
+
 def main():
     files = []
     for dirpath, _, names in os.walk(ROOT):
@@ -226,7 +280,9 @@ def main():
         check_fullwidth(f)
 
     check_sources_exist()
+    check_include_dirs_match_build()
     check_structure()
+    check_vendor()
 
     if WARNS:
         print("警告:")

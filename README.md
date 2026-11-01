@@ -100,15 +100,29 @@
 
 ## 编译
 
-需要 macOS + Xcode（iOS arm64 目标只有 Xcode 提供）：
+### 本地（需要 macOS + Xcode）
 
 ```bash
 ./build.sh release      # 或 debug
+# 或
+make release
 ```
 
 产物：`build/TYMemMCP.dylib`
 
-脚本会硬校验两件事，任一不过就中断：
+### 通过 CI 打包
+
+推送到 `main`/`master` 会自动触发 GitHub Actions 构建，
+产物在 Actions 的 Artifacts 里（`TYMemMCP.dylib` + 未签名版）。
+
+```bash
+make check    # 只跑静态自检，不需要 macOS
+make dist     # 编译 + 打包成 zip
+```
+
+### build.sh 的两道硬校验
+
+任一不过就中断：
 
 1. **`install_name` = `@executable_path/TYMemMCP.dylib`**
    宿主 `czrxd` 只有一个 rpath `@executable_path/Frameworks`，
@@ -122,8 +136,24 @@
 `MH_PIE` 仅作记录，不作门槛 —— 本 app 里正常工作
 的 dylib（UnityFramework / Sentry / librecast / 既有注入产物）都没有该位。
 
-依赖 `../TaoYaoFix/Core/TYIl2Cpp.m`（复用其 il2cpp 绑定）。可用
-环境变量 `TAOYAO_SRC` 指定别的路径。
+---
+
+## 依赖：Vendor/
+
+本仓库**自包含** —— il2cpp 绑定与日志实现放在 `Vendor/`，
+从 `TaoYaoFix` 复制而来。CI 不需要额外 checkout 另一个仓库。
+
+细节与同步方法见 [Vendor/README.md](Vendor/README.md)。同步命令：
+
+```bash
+make sync          # 或 bash tools/sync_vendor.sh
+```
+
+本地开发想实时跟着 TaoYao 的改动编译，可以指向外部源码：
+
+```bash
+TAOYAO_SRC=/path/to/TaoYaoFix ./build.sh release
+```
 
 ---
 
@@ -172,15 +202,27 @@ curl -s -X POST http://<设备IP>:27019/mcp \
 ## 自检（不需要设备 / Xcode）
 
 ```bash
-python tools/selfcheck.py          # 括号配平 / 头文件 / 全角标点 / 结构要求
+python tools/selfcheck.py          # 括号配平 / 头文件 / 全角标点 / 结构 / Vendor
 python tools/test_mcp_protocol.py  # 工具声明与分发一致性、必填字段
 python tools/mock_mcp_test.py      # 起 mock 服务器跑完整握手时序
+bash   tools/sync_vendor.sh        # 从 TaoYaoFix 同步 Vendor（需本地有那个仓库）
 ```
 
 `mock_mcp_test.py` 最关键：它验证 `initialize → notifications/initialized
 → tools/list → tools/call` 这条时序能被标准客户端接受。
 这正是 MT-MCP 那个 `Session not initialized` 的坑 —— 少了
 `notifications/initialized` 通知，后续调用全被拒。
+
+`selfcheck.py` 覆盖的几类问题：
+
+- 括号 / 大括号 / 方括号配平（排除字符串与注释内容）
+- `#import "本地头"` 能否被 `build.sh` 的 `-I` 列表解析
+- 代码区误入全角标点（`#pragma mark` 等预处理指令放行）
+- `build.sh` 列出的源文件是否都存在
+- **Vendor 是否自包含**、以及 Bridge 依赖的方法是否仍在 Vendor 头里声明
+- `selfcheck` 的 `-I` 列表与 `build.sh` 是否一致
+
+这些检查都做过负向验证（故意破坏后确认能报错），不是走过场。
 
 ---
 

@@ -43,7 +43,8 @@ mkdir -p "$OUT_DIR"
 OUT_DYLIB="$OUT_DIR/TYMemMCP.dylib"
 
 # TaoYao 源码根（复用其 TYIl2Cpp 绑定与 TYLog）
-TAOYAO_SRC="${TAOYAO_SRC:-$ROOT/../TaoYaoFix}"
+# 注意：TAOYAO_SRC 不设默认值 —— 留空表示用仓库内置的 Vendor/。
+# 只有显式指定时才去外部 TaoYao 仓库取。
 
 SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
 SDK_VER="$(xcrun --sdk iphoneos --show-sdk-version)"
@@ -54,7 +55,7 @@ echo "   clang    : $CLANG"
 echo "   SDK 路径 : $SDK_PATH"
 echo "   SDK 版本 : $SDK_VER"
 echo "   配置     : $CONFIG"
-echo "   TaoYao   : $TAOYAO_SRC"
+echo "   复用来源 : ${TAOYAO_SRC:-$ROOT/Vendor}"
 echo
 
 # ---------------------------------------------------------------- 源文件
@@ -69,10 +70,22 @@ SRC_FILES=(
   Entry/TYMemMCPEntry.m
 )
 
-# 复用 TaoYao 的 il2cpp 绑定与日志实现（唯一依赖项）。
+# 复用的 il2cpp 绑定与日志实现。
+#
+# 默认用 Vendor/（仓库自包含，CI 直接能编）。
+# 若设了 TAOYAO_SRC，则改为从 TaoYao 仓库取 —— 适合本地开发时
+# 想实时跟着 TaoYao 的改动编译。CI 不设该变量，走 Vendor/。
+if [ -n "${TAOYAO_SRC:-}" ]; then
+  REUSE_DIR="$TAOYAO_SRC/Core"
+  echo "复用来源: $REUSE_DIR（TAOYAO_SRC 已指定）"
+else
+  REUSE_DIR="$ROOT/Vendor"
+  echo "复用来源: $REUSE_DIR（仓库内置）"
+fi
+
 REUSE_FILES=(
-  "$TAOYAO_SRC/Core/TYIl2Cpp.m"
-  "$TAOYAO_SRC/Core/TYLog.m"
+  "$REUSE_DIR/TYIl2Cpp.m"
+  "$REUSE_DIR/TYLog.m"
 )
 
 echo "== 源文件 =="
@@ -108,7 +121,7 @@ CFLAGS=(
   -I"$ROOT/MCP"
   -I"$ROOT/Net"
   -I"$ROOT/Entry"
-  -I"$TAOYAO_SRC/Core"
+  -I"$REUSE_DIR"
 )
 
 LDFLAGS=(

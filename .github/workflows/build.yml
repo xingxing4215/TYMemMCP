@@ -1,0 +1,228 @@
+#
+# 构建 TYMemMCP —— GitHub Actions
+#
+# ═══════════════════════════════════════════════════════════════════════
+# 为什么必须在 macOS 上构建
+# ═══════════════════════════════════════════════════════════════════════
+# iOS arm64 dylib 需要 iphoneos SDK 与 clang 的 arm64-apple-ios 目标，
+# 这套工具链只有 macOS 上有（Xcode 自带）。GitHub 的 macos runner
+# 预装了完整 Xcode，正好补上这一环。
+#
+# ═══════════════════════════════════════════════════════════════════════
+# 本工作流针对「注入后闪退」做的强制校验（四层，任一层失败即中断）
+# ═══════════════════════════════════════════════════════════════════════
+# 第 0 层 · 换行符
+#    CRLF 会让 build.sh 在 macOS 上直接报错，先卡掉。
+#
+# 第 1 层 · 源码自检
+#    · selfcheck.py          —— 括号配平 / 头文件存在 / 全角标点 / 结构要求
+#    · test_mcp_protocol.py  —— 工具声明与分发一致性、required 字段
+#    · mock_mcp_test.py      —— 起 mock 服务器跑完整 MCP 握手时序
+#
+# 第 2 层 · 产物结构（编译后立即校验，build.sh 内部也会查一遍）
+#    1) install_name = @executable_path/TYMemMCP.dylib（硬性门槛）
+#       宿主 czrxd 唯一 LC_RPATH 是 @executable_path/Frameworks，
+#       而本 app 约定 dylib 放 .app 根目录（既有注入产物
+#       @executable_path/星星💫超自然.dylib 即如此）。
+#       写成 @rpath/... 会被解析到 Frameworks/ 下，文件不在那里
+#       → dyld 在 main() 之前报 Library not loaded → 点开即闪退。
+#    2) __mod_init_func 段存在
+#       本插件入口是 __attribute__((constructor))，靠该段被 dyld 调用。
+#       缺段 = 注入后压根不初始化。
+#    3) MH_PIE 仅作记录，不作为门槛
+#       ld 对 -dynamiclib 直接忽略 -pie，且本 app 全部正常 dylib
+#       （UnityFramework / Sentry / librecast / 既有注入产物）均无该位。
+#
+# 第 3 层 · 签名后复验
+#    ldid 伪签会重写 Mach-O 尾部；签名后再验一次 install_name 与
+#    init 段，确保签名没破坏关键结构。
+#
+# 产物双份：未签名 + ldid 伪签。
+#
+
+name: 构建 TYMemMCP
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'Core/**'
+      - 'Mem/**'
+      - 'Scan/**'
+      - 'Il2Cpp/**'
+      - 'MCP/**'
+      - 'Net/**'
+      - 'Entry/**'
+      - 'Vendor/**'
+      - 'tools/**'
+      - 'Makefile'
+      - 'build.sh'
+      - '*.py'
+      - '.github/workflows/build.yml'
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 编译 arm64 dylib
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 显示工具链版本
+        run: |
+          echo "== Xcode =="
+          xcodebuild -version
+          echo "== SDK =="
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos --show-sdk-version
+          echo "== clang =="
+          xcrun --sdk iphoneos -f clang
+          "$(xcrun --sdk iphoneos -f clang)" --version
+
+      - name: 安装 ldid
+        run: |
+          # ldid 用于给 dylib 做伪签名，越狱环境不需要 Apple 证书
+          brew install ldid || true
+          if command -v ldid >/dev/null 2>&1; then
+            ldid --version || true
+          else
+            echo "ldid 未装上，稍后跳过签名步骤"
+          fi
+
+      - name: 检查换行符（CRLF 会让 build.sh 在 macOS 上失败）
+        run: |
+          set -euo pipefail
+          BAD=$(grep -lU $'\r' build.sh tools/*.py tools/*.sh .github/workflows/*.yml 2>/dev/null || true)
+          if [ -n "$BAD" ]; then
+            echo "✗ 下列文件含 CRLF 换行，会导致脚本执行失败："
+            echo "$BAD"
+            exit 1
+          fi
+          echo "✓ 所有脚本均为 LF 换行"
+
+      - name: 源码自检
+        run: |
+          set -euo pipefail
+          echo "== 1. 源码结构自检 =="
+          python3 tools/selfcheck.py
+          echo
+          echo "== 2. MCP 协议层一致性 =="
+          python3 tools/test_mcp_protocol.py
+          echo
+          echo "== 3. MCP 握手时序（mock 服务器）=="
+          python3 tools/mock_mcp_test.py
+
+      - name: 校验复用的 Vendor 文件
+        run: |
+          set -euo pipefail
+          echo "== Vendor 内容 =="
+          ls -la Vendor/
+          for f in TYIl2Cpp.h TYIl2Cpp.m TYLog.h TYLog.m; do
+            if [ ! -f "Vendor/$f" ]; then
+              echo "✗ Vendor/$f 缺失 —— 仓库不自包含，CI 会编译失败"
+              exit 1
+            fi
+          done
+          echo
+          echo "== TYIl2Cpp.h 是否仍声明 Bridge 依赖的方法 =="
+          METHODS="classFullyQualified classWithNamespace allImageNames classNameOf classOfObject \
+                   methodOfClass invokeNoArg invokeIntReturning staticObjectField objectField \
+                   fieldOfClass isStaticField fieldTypeName readBoolField writeBoolField \
+                   readInt32Field writeInt32Field readFloatField writeFloatField \
+                   imageClassEnumerationAvailable classNamesInImageNamed scanFieldsInImageNamed \
+                   classInImageNamed fieldsOfClass methodsOfClass"
+          MISSING=0
+          for m in $METHODS; do
+            if ! grep -q "$m" Vendor/TYIl2Cpp.h; then
+              echo "  ✗ 缺失: $m"
+              MISSING=1
+            fi
+          done
+          if [ "$MISSING" -ne 0 ]; then
+            echo "✗ TYIl2CppBridge.m 依赖的方法在 Vendor 头里找不到"
+            exit 1
+          fi
+          echo "  ✓ 全部方法都在"
+
+      - name: 编译（release）
+        run: |
+          set -euo pipefail
+          chmod +x build.sh
+          ./build.sh release
+
+      - name: 签名后复验
+        run: |
+          set -euo pipefail
+          DYLIB=build/TYMemMCP.dylib
+          if [ ! -f "$DYLIB" ]; then
+            echo "✗ 未产出 $DYLIB"
+            exit 1
+          fi
+
+          cp "$DYLIB" build/TYMemMCP-unsigned.dylib
+          echo "== 未签名产物 =="
+          ls -lh build/TYMemMCP-unsigned.dylib
+
+          if command -v ldid >/dev/null 2>&1; then
+            ldid -S "$DYLIB"
+            echo
+            echo "== 伪签名完成，复验关键结构 =="
+
+            NAME=$(otool -D "$DYLIB" | tail -n 1)
+            echo "install_name = $NAME"
+            if [ "$NAME" != "@executable_path/TYMemMCP.dylib" ]; then
+              echo "✗ 签名后 install_name 被破坏：$NAME"
+              exit 1
+            fi
+
+            if ! otool -l "$DYLIB" | grep -q mod_init_func; then
+              echo "✗ 签名后 __mod_init_func 段丢失"
+              exit 1
+            fi
+            echo "✓ 签名后 install_name 与 __mod_init_func 均完好"
+          else
+            echo "ldid 不可用，跳过伪签名（产物为未签名版本）"
+          fi
+
+      - name: 汇总产物信息
+        run: |
+          set -euo pipefail
+          echo "== 文件 =="
+          ls -la build/
+          echo
+          echo "== 架构 =="
+          lipo -info build/TYMemMCP.dylib || true
+          echo
+          echo "== 依赖 =="
+          otool -L build/TYMemMCP.dylib || true
+          echo
+          echo "== 关键符号 =="
+          nm -gU build/TYMemMCP.dylib 2>/dev/null | grep -E 'TYMemMCPInit|OBJC_CLASS_\$_TY' | head -30 || true
+          echo
+          echo "== 工具数量 =="
+          python3 - <<'PY'
+          import io, re
+          s = io.open('MCP/TYMCPServer.m', encoding='utf-8').read()
+          names = re.findall(r'@\{@"name":\s*@"([a-z0-9_]+)"', s)
+          print(f"  共 {len(names)} 个工具")
+          for n in names:
+              print("   -", n)
+          PY
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: TYMemMCP-dylib
+          path: |
+            build/TYMemMCP.dylib
+            build/TYMemMCP-unsigned.dylib
+          if-no-files-found: error
+          retention-days: 30
