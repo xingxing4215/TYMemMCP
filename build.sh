@@ -35,7 +35,7 @@ CONFIG="${1:-release}"
 case "$CONFIG" in
   release) OPT="-O2 -DNDEBUG" ;;
   debug)   OPT="-O0 -g -DDEBUG" ;;
-  *) echo "未知配置: $CONFIG（可选 release/debug）"; exit 1 ;;
+  *) echo "未知配置: ${CONFIG}（可选 release/debug）"; exit 1 ;;
 esac
 
 OUT_DIR="$ROOT/build"
@@ -77,10 +77,10 @@ SRC_FILES=(
 # 想实时跟着 TaoYao 的改动编译。CI 不设该变量，走 Vendor/。
 if [ -n "${TAOYAO_SRC:-}" ]; then
   REUSE_DIR="$TAOYAO_SRC/Core"
-  echo "复用来源: $REUSE_DIR（TAOYAO_SRC 已指定）"
+  echo "复用来源: ${REUSE_DIR}（TAOYAO_SRC 已指定）"
 else
   REUSE_DIR="$ROOT/Vendor"
-  echo "复用来源: $REUSE_DIR（仓库内置）"
+  echo "复用来源: ${REUSE_DIR}（仓库内置）"
 fi
 
 REUSE_FILES=(

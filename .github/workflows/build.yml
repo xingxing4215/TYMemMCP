@@ -119,6 +119,33 @@ jobs:
           echo
           echo "== 3. MCP 握手时序（mock 服务器）=="
           python3 tools/mock_mcp_test.py
+          echo
+          echo "== 4. shell 变量陷阱（\$VAR 紧邻中文）=="
+          python3 tools/check_shell_vars.py
+
+      - name: 校验 build.sh 可执行（不真正编译）
+        run: |
+          set -euo pipefail
+          # 抓「$VAR 后紧跟中文」这类只在运行时才暴露的 bash 错误：
+          # 用 bash -n 查语法，再在 set -u 下执行到工具链检查之前的部分。
+          bash -n build.sh
+          echo "  ✓ build.sh 语法正确"
+          bash -n tools/sync_vendor.sh
+          echo "  ✓ sync_vendor.sh 语法正确"
+
+          # 真正跑一遍变量解析（如果 $VAR 被中文污染，这里就会 unbound variable）
+          ROOT="$(pwd)"
+          TAOYAO_SRC=""
+          if [ -n "${TAOYAO_SRC:-}" ]; then
+            REUSE_DIR="$TAOYAO_SRC/Core"
+          else
+            REUSE_DIR="$ROOT/Vendor"
+          fi
+          echo "  复用目录: $REUSE_DIR"
+          test -d "$REUSE_DIR" || { echo "✗ 复用目录不存在"; exit 1; }
+          test -f "$REUSE_DIR/TYIl2Cpp.m" || { echo "✗ 缺 TYIl2Cpp.m"; exit 1; }
+          test -f "$REUSE_DIR/TYLog.m" || { echo "✗ 缺 TYLog.m"; exit 1; }
+          echo "  ✓ 变量解析与复用目录均正常"
 
       - name: 校验复用的 Vendor 文件
         run: |

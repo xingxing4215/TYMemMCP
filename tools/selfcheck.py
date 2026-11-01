@@ -236,6 +236,48 @@ def check_structure():
         FAILS.append("build.sh 未校验 __mod_init_func 段")
 
 
+def check_shell_var_cjk():
+    """抓「$VAR 后紧跟中文」—— 本项目真实踩过的 bash 陷阱。
+
+    bash 把非 ASCII 字节也算作变量名的一部分，于是
+
+        echo "来源: $REUSE_DIR（仓库内置）"
+
+    的变量名被解析成 `REUSE_DIR（仓库内置）`，未定义 → set -u 下
+    直接 unbound variable 退出。CI 曾因此失败在「编译」那一步，
+    而前面所有自检都通过（因为自检根本不执行 shell）。
+
+    修法：一律写 `${VAR}`。
+    """
+    CJK = ("\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\u3400-\u4dbf")
+    pat = re.compile(r'\$([A-Za-z_][A-Za-z0-9_]*)([' + CJK + r'])')
+    targets = []
+    for f in ("build.sh", "Makefile"):
+        p = os.path.join(ROOT, f)
+        if os.path.exists(p):
+            targets.append(p)
+    tdir = os.path.join(ROOT, "tools")
+    if os.path.isdir(tdir):
+        for nm in sorted(os.listdir(tdir)):
+            if nm.endswith(".sh"):
+                targets.append(os.path.join(tdir, nm))
+    wf = os.path.join(ROOT, ".github", "workflows")
+    if os.path.isdir(wf):
+        for nm in sorted(os.listdir(wf)):
+            if nm.endswith((".yml", ".yaml")):
+                targets.append(os.path.join(wf, nm))
+
+    for p in targets:
+        for lineno, line in enumerate(io.open(p, encoding="utf-8").read().splitlines(), 1):
+            if line.strip().startswith("#"):
+                continue
+            for m in pat.finditer(line):
+                FAILS.append(
+                    f"{rel(p)}:{lineno} `${m.group(1)}` 后紧跟中文 '{m.group(2)}' "
+                    f"—— bash 会把它并入变量名，set -u 下报 unbound variable；"
+                    f"改用 `${{{m.group(1)}}}`")
+
+
 def check_vendor():
     """Vendor/ 必须自包含 —— CI 只 checkout 本仓库，缺文件就是编译失败。"""
     vend = os.path.join(ROOT, "Vendor")
@@ -283,6 +325,7 @@ def main():
     check_include_dirs_match_build()
     check_structure()
     check_vendor()
+    check_shell_var_cjk()
 
     if WARNS:
         print("警告:")

@@ -42,10 +42,10 @@ for f in "${FILES[@]}"; do
     exit 1
   fi
   if [ -f "Vendor/$f" ] && cmp -s "$SRC/Core/$f" "Vendor/$f"; then
-    echo "  = $f（无变化）"
+    echo "  = ${f}（无变化）"
   else
     cp "$SRC/Core/$f" "Vendor/$f"
-    echo "  ↑ $f（已更新）"
+    echo "  ↑ ${f}（已更新）"
     changed=1
   fi
 done
